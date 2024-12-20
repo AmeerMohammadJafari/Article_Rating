@@ -8,6 +8,8 @@ from django.db.models import Avg, Count, Q
 import logging
 from django.db.models.functions import Coalesce
 
+THRESHOLD = 1000
+
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +32,8 @@ def process_pending_ratings():
             avg_last_rating = entry['avg_last_rating']
             num_new_ratings = entry['num_new_ratings']
             num_all_pending_ratings = entry['num_all_pending_ratings']
+            if avg_current_rating * num_all_pending_ratings < THRESHOLD:
+                continue
 
             logger.debug(f"Processing article {article.id}: avg_current_rating={avg_current_rating}, "
                             f"avg_last_rating={avg_last_rating}, new_num_ratings={num_new_ratings}")
