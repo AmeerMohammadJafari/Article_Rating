@@ -6,6 +6,7 @@ from rest_framework.authtoken.models import Token
 from rest_framework.test import APIClient
 
 from .models import Article, PendingRating, Rating
+from .tasks import BURST_SIZE, process_pending_ratings
 
 
 class ArticleModelTests(TestCase):
@@ -122,3 +123,65 @@ class SubmitRatingTests(AuthenticatedAPITestCase):
         response = self.client.post(self.url(article_id=9999), {"rating": 3}, format="json")
 
         self.assertEqual(response.status_code, 404)
+
+
+class ProcessPendingRatingsTests(TestCase):
+    def setUp(self):
+        self.article = Article.objects.create(title="t", content="c")
+
+    def make_users(self, count, prefix="u"):
+        return User.objects.bulk_create(User(username=f"{prefix}{i}") for i in range(count))
+
+    def seed_ratings(self, values):
+        for user, value in zip(self.make_users(len(values), prefix="seed"), values):
+            Rating.objects.create(article=self.article, user=user, rating=value)
+            self.article.add_rating(value)
+
+    def test_applies_a_small_batch_of_new_ratings(self):
+        users = self.make_users(2)
+        PendingRating.objects.create(article=self.article, user=users[0], rating=4, last_rate=None)
+        PendingRating.objects.create(article=self.article, user=users[1], rating=2, last_rate=None)
+
+        process_pending_ratings()
+
+        self.article.refresh_from_db()
+        self.assertEqual(self.article.num_ratings, 2)
+        self.assertAlmostEqual(self.article.avg_rating, 3.0)
+        self.assertEqual(Rating.objects.count(), 2)
+        self.assertFalse(PendingRating.objects.exists())
+
+    def test_re_rate_replaces_previous_rating_without_adding_a_vote(self):
+        self.seed_ratings([2, 4])
+        user = User.objects.get(username="seed0")
+        PendingRating.objects.create(article=self.article, user=user, rating=5, last_rate=2)
+
+        process_pending_ratings()
+
+        self.article.refresh_from_db()
+        self.assertEqual(self.article.num_ratings, 2)
+        self.assertAlmostEqual(self.article.avg_rating, 4.5)
+        self.assertEqual(Rating.objects.get(user=user).rating, 5)
+
+    def test_dampens_a_large_burst_of_low_ratings(self):
+        self.seed_ratings([5] * 10)
+        for user in self.make_users(BURST_SIZE):
+            PendingRating.objects.create(article=self.article, user=user, rating=0, last_rate=None)
+
+        process_pending_ratings()
+
+        self.article.refresh_from_db()
+        self.assertEqual(self.article.num_ratings, 10 + BURST_SIZE)
+        # Each burst vote counts as 5 - 0.1 * 5 = 4.5 instead of 0.
+        expected = round((10 * 5 + BURST_SIZE * 4.5) / (10 + BURST_SIZE), 2)
+        self.assertAlmostEqual(self.article.avg_rating, expected)
+
+    def test_large_batch_close_to_the_average_is_not_dampened(self):
+        self.seed_ratings([4] * 10)
+        for user in self.make_users(BURST_SIZE):
+            PendingRating.objects.create(article=self.article, user=user, rating=3, last_rate=None)
+
+        process_pending_ratings()
+
+        self.article.refresh_from_db()
+        expected = round((10 * 4 + BURST_SIZE * 3) / (10 + BURST_SIZE), 2)
+        self.assertAlmostEqual(self.article.avg_rating, expected)

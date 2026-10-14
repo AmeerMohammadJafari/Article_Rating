@@ -17,7 +17,7 @@ POST /articles/<id>/rate/ ──► PendingRating (one row per user+article) ─
                                      │
          SELECT … FOR UPDATE on the article → apply delta to the running average
                                      │
-                    upsert into Rating, clear PendingRating
+                upsert into Rating, delete the processed PendingRating rows
 ```
 
 - **Write buffering:** submissions go to a `PendingRating` table (`unique_together` on user+article), so
@@ -26,7 +26,9 @@ POST /articles/<id>/rate/ ──► PendingRating (one row per user+article) ─
   batch adjusts the average by `(new − old)` and only increments `num_ratings` for first-time voters.
 - **Concurrency safety:** the batch runs in a single transaction and locks each article with
   `select_for_update()`, so concurrent workers can't lose updates to the running average.
-- **Rating-burst threshold:** `THRESHOLD` in `articles/tasks.py` gates when a pending batch is applied.
+- **Rating-burst dampening:** a batch of at least `BURST_SIZE` votes whose average is `BURST_DROP` or more
+  below the article's current average is treated as a burst, and only `BURST_WEIGHT` of its deviation is
+  applied (see `articles/tasks.py`).
 
 ## API
 
