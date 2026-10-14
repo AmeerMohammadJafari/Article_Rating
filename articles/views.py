@@ -104,7 +104,7 @@ class SubmitRatingView(APIView):
         rating_value = request.data.get('rating')
 
         # Validate the rating
-        if rating_value is None or not (0 <= rating_value <= 5):
+        if not isinstance(rating_value, int) or isinstance(rating_value, bool) or not (0 <= rating_value <= 5):
             return Response({"detail": "Rating must be between 0 and 5."}, status=status.HTTP_400_BAD_REQUEST)
 
         # Get the article

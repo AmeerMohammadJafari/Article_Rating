@@ -1,3 +1,7 @@
 from django.contrib import admin
 
-# Register your models here.
+from .models import Article, PendingRating, Rating
+
+admin.site.register(Article)
+admin.site.register(Rating)
+admin.site.register(PendingRating)
